@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Lock, Unlock, AlertTriangle, Info, ArrowRight } from 'lucide-react';
 import { getSessions } from '../api/sessions';
 import type { Session } from '../types/api';
+import DemoControl from '../components/DemoControl';
 
 // removed severityColors
 
@@ -121,7 +122,8 @@ export default function LiveSessions() {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-gray-500 border border-dashed border-gray-800 rounded-xl">
         <Info size={32} className="mb-2" />
-        <div>No VPN sessions analysed yet — awaiting captures</div>
+        <div className="mb-4">No VPN sessions analysed yet — awaiting captures</div>
+        <DemoControl />
       </div>
     );
   }
@@ -133,7 +135,7 @@ export default function LiveSessions() {
           <h1 className="text-2xl font-bold tracking-tight mb-1">Live Sessions</h1>
           <p className="text-gray-400 text-sm">Real-time analysis of IPsec VPN traffic</p>
         </div>
-        <div className="text-xs text-gray-500">Auto-refreshing every 5s</div>
+        <DemoControl />
       </div>
       
       <div className="grid gap-4">

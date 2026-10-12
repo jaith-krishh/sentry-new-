@@ -575,6 +575,103 @@ async def metrics_sse(request: Request):
     )
 
 
+# ── Live demo (POST /demo/start|stop, GET /demo/status) ──────────────────────
+# Drops a new synthetic IPsec capture into the watched captures dir every few
+# seconds; the running watcher -> Kafka -> consumer -> /analyze pipeline then
+# surfaces each one on the dashboard exactly like a real capture.
+CAPTURES_DIR = Path(os.getenv("CAPTURES_DIR") or ROOT / os.getenv("PCAP_DIR", "capture/pcaps"))
+DEMO_INTERVAL_SEC = float(os.getenv("DEMO_INTERVAL_SEC", "6"))
+DEMO_SCENARIOS = [  # (traffic, cipher, dh group) — mix of strong and weak configs
+    ("voip", "aes256_gcm", "group19"),
+    ("web", "aes128_cbc", "group14"),
+    ("video_stream", "aes256_cbc", "group20"),
+    ("file_transfer", "aes128_cbc", "group2"),
+    ("icmp", "aes128_gcm", "group5"),
+]
+
+
+class DemoState:
+    task: Optional[asyncio.Task] = None
+    started_at: Optional[float] = None
+    generated: int = 0
+    last_session_id: Optional[str] = None
+    last_error: Optional[str] = None
+
+
+demo = DemoState()
+
+
+def _demo_running() -> bool:
+    return demo.task is not None and not demo.task.done()
+
+
+async def _demo_loop() -> None:
+    i = 0
+    while True:
+        traffic, cipher, dh = DEMO_SCENARIOS[i % len(DEMO_SCENARIOS)]
+        session_id = f"demo_{traffic}_{int(time.time())}_{i}"
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(ROOT / "scripts" / "synth_pcap.py"),
+            "--traffic", traffic, "--cipher", cipher, "--dh", dh,
+            "--session-id", session_id, "--out-dir", str(CAPTURES_DIR),
+            "--initiator", f"10.10.0.{2 + i % 200}", "--responder", "10.10.0.1",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        _, err = await proc.communicate()
+        if proc.returncode == 0:
+            demo.generated += 1
+            demo.last_session_id = session_id
+            demo.last_error = None
+        else:
+            demo.last_error = err.decode(errors="replace").strip()[-300:] or f"exit {proc.returncode}"
+            logger.warning("demo capture failed: %s", demo.last_error)
+        i += 1
+        await asyncio.sleep(DEMO_INTERVAL_SEC)
+
+
+def _demo_status() -> dict:
+    return {
+        "running": _demo_running(),
+        "started_at": _iso(demo.started_at) if demo.started_at else None,
+        "generated": demo.generated,
+        "last_session_id": demo.last_session_id,
+        "interval_sec": DEMO_INTERVAL_SEC,
+        "last_error": demo.last_error,
+    }
+
+
+@app.post("/demo/start")
+async def demo_start():
+    if not _demo_running():
+        demo.started_at, demo.generated, demo.last_error = time.time(), 0, None
+        demo.task = asyncio.create_task(_demo_loop())
+    return _demo_status()
+
+
+@app.post("/demo/stop")
+async def demo_stop():
+    if _demo_running():
+        demo.task.cancel()
+    return {**_demo_status(), "running": False}
+
+
+@app.post("/demo/reset")
+async def demo_reset():
+    """Stop the demo and wipe every stored session so the dashboard starts empty."""
+    if _demo_running():
+        demo.task.cancel()
+    demo.generated, demo.last_session_id, demo.last_error = 0, None, None
+    await _ensure_index()
+    res = await state.es.delete_by_query(
+        index=ES_INDEX, query={"match_all": {}}, refresh=True, conflicts="proceed", ignore_unavailable=True)
+    return {**_demo_status(), "running": False, "deleted": res.get("deleted", 0)}
+
+
+@app.get("/demo/status")
+async def demo_status():
+    return _demo_status()
+
+
 # ── GET /health ──────────────────────────────────────────────────────────────
 def _kafka_topics() -> list[str]:
     from confluent_kafka.admin import AdminClient
