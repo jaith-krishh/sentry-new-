@@ -30,8 +30,10 @@ export default function DemoControl() {
           Watching VPN · {data?.generated ?? 0} captured
         </span>
       )}
-      {(toggle.isError || data?.last_error) && (
-        <span className="text-xs text-red-400">{toggle.isError ? 'Could not reach API' : 'Capture failed'}</span>
+      {(toggle.isError || reset.isError || data?.last_error) && (
+        <span className="text-xs text-red-400" title={String((reset.error ?? toggle.error)?.message ?? '')}>
+          {reset.isError ? `Reset failed: ${reset.error.message}` : toggle.isError ? 'Could not reach API' : 'Capture failed'}
+        </span>
       )}
       <button
         onClick={() => {

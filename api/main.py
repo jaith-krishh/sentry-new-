@@ -655,16 +655,32 @@ async def demo_stop():
     return {**_demo_status(), "running": False}
 
 
+async def _wipe_sessions() -> int:
+    await _ensure_index()
+    res = await state.es.delete_by_query(
+        index=ES_INDEX, query={"match_all": {}}, refresh=True, conflicts="proceed", ignore_unavailable=True)
+    return res.get("deleted", 0)
+
+
+async def _wipe_stragglers() -> None:
+    # Captures already queued in the watcher/Kafka land after the first wipe; sweep again.
+    for delay in (8, 12, 20):
+        await asyncio.sleep(delay)
+        try:
+            await _wipe_sessions()
+        except Exception as exc:
+            logger.warning("demo reset sweep failed: %s", exc)
+
+
 @app.post("/demo/reset")
 async def demo_reset():
     """Stop the demo and wipe every stored session so the dashboard starts empty."""
     if _demo_running():
         demo.task.cancel()
     demo.generated, demo.last_session_id, demo.last_error = 0, None, None
-    await _ensure_index()
-    res = await state.es.delete_by_query(
-        index=ES_INDEX, query={"match_all": {}}, refresh=True, conflicts="proceed", ignore_unavailable=True)
-    return {**_demo_status(), "running": False, "deleted": res.get("deleted", 0)}
+    deleted = await _wipe_sessions()
+    asyncio.create_task(_wipe_stragglers())
+    return {**_demo_status(), "running": False, "deleted": deleted}
 
 
 @app.get("/demo/status")
